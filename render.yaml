@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: tesda-presentation
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PRESENTER_PASSCODE
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: presentations
+      mountPath: /var/data
+      sizeGB: 1
