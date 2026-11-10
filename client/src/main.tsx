@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Logo, Tagline } from "./Brand";
 import { Guest } from "./Guest";
 import { Presenter } from "./Presenter";
+import { appRole } from "./config";
 import "./style.css";
 
 const path = window.location.pathname.replace(/\/+$/, "");
@@ -22,5 +23,9 @@ function Landing() {
 }
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>{path === "/present" ? <Presenter /> : path === "/watch" ? <Guest /> : <Landing />}</StrictMode>,
+  <StrictMode>
+    {appRole
+      ? appRole === "presenter" ? <Presenter /> : <Guest />
+      : path === "/present" ? <Presenter /> : path === "/watch" ? <Guest /> : <Landing />}
+  </StrictMode>,
 );

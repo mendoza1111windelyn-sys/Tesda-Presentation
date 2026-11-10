@@ -22,6 +22,15 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(rootDir, "data"))
 const filesDir = path.join(dataDir, "files");
 const libraryFile = path.join(dataDir, "library.json");
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const allowedOrigins = new Set(
+  (process.env.CORS_ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+const isAllowedOrigin = (origin) =>
+  allowedOrigins.has(origin) ||
+  (!process.env.CORS_ALLOWED_ORIGINS && /^https?:\/\/localhost(?::\d+)?$/.test(origin));
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseBucket = process.env.SUPABASE_BUCKET || "presentations";
@@ -121,6 +130,18 @@ const state = freshState();
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
+app.use("/api", (req, res, next) => {
+  const origin = req.headers.origin;
+  if (!origin) return next();
+  if (!isAllowedOrigin(origin)) return res.status(403).json({ error: "This website is not allowed to use the presentation service." });
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Range");
+  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges, Content-Range, Content-Length, Content-Disposition");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 app.use(express.json({ limit: "10kb" }));
 
 app.post("/api/login", (req, res) => {
@@ -343,6 +364,8 @@ const sendCounts = () => send(presenter, { type: "guests", count: guests.size })
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, "http://localhost");
   if (url.pathname !== "/ws") return socket.destroy();
+  const origin = req.headers.origin;
+  if (origin && !isAllowedOrigin(origin)) return socket.destroy();
   const wantsPresenter = url.searchParams.get("role") === "presenter";
   if (wantsPresenter && !tokens.has(url.searchParams.get("token") || "")) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, wantsPresenter));

@@ -12,3 +12,25 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://tesda-presenter.onrender.com,https://tesda-guests.onrender.com
+  - type: static
+    name: tesda-presenter
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./client/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://tesda-presentation.onrender.com
+      - key: VITE_APP_ROLE
+        value: presenter
+      - key: VITE_GUEST_URL
+        value: https://tesda-guests.onrender.com
+  - type: static
+    name: tesda-guests
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./client/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://tesda-presentation.onrender.com
+      - key: VITE_APP_ROLE
+        value: guest

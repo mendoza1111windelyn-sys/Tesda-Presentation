@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Logo, Splash, Tagline } from "./Brand";
 import { emptyState, Flipbook, usePdf, type SharedState } from "./PdfView";
 import { useSocket } from "./socket";
+import { apiUrl } from "./config";
 
 export function Guest() {
   const [state, setState] = useState<SharedState>(emptyState);
@@ -12,7 +13,7 @@ export function Guest() {
   });
 
   const live = state.started && !!state.currentId;
-  const { doc, error } = usePdf(live ? `/api/files/${state.currentId}` : null);
+  const { doc, error } = usePdf(live ? apiUrl(`/api/files/${state.currentId}`) : null);
 
   if (!live) return <Splash status={connected ? undefined : "Connecting…"} />;
 
@@ -27,7 +28,7 @@ export function Guest() {
         <span className="spacer" />
         {!connected && <span className="pill warn">Reconnecting…</span>}
         {total > 0 && <span className="pill">Slide {Math.min(state.page, total)} / {total}</span>}
-        <a className="button" href={`/api/files/${state.currentId}?download=1`} download>Download PDF</a>
+        <a className="button" href={apiUrl(`/api/files/${state.currentId}?download=1`)} download>Download PDF</a>
       </header>
 
       <div className="guest-stage">

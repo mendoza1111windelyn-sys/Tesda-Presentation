@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { socketUrl } from "./config";
 
 type Handlers = {
   onMessage: (message: any) => void;
@@ -15,8 +16,7 @@ export function useSocket(query: string, handlers: Handlers) {
     let closed = false;
     let retry: number | undefined;
     const connect = () => {
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${protocol}://${window.location.host}/ws?${query}`);
+      const socket = new WebSocket(socketUrl(query));
       socketRef.current = socket;
       socket.onopen = () => setConnected(true);
       socket.onmessage = (event) => {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Logo } from "./Brand";
 import { emptyState, Flipbook, usePdf, type SharedState } from "./PdfView";
 import { useSocket } from "./socket";
+import { apiUrl, guestUrl } from "./config";
 
 type LibraryItem = {
   id: string;
@@ -44,7 +45,7 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/login", {
+      const response = await fetch(apiUrl("/api/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ passcode }),
@@ -88,7 +89,7 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   const [pptFile, setPptFile] = useState<File | null>(null);
   const [formKey, setFormKey] = useState(0);
   const stageRef = useRef<HTMLElement>(null);
-  const guestLink = `${window.location.origin}/watch`;
+  const guestLink = guestUrl;
 
   const authHeaders = { Authorization: `Bearer ${token}` };
 
@@ -109,7 +110,7 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   );
 
   const current = library.find((item) => item.id === state.currentId);
-  const { doc, error: pdfError } = usePdf(current ? `/api/files/${current.id}` : null, token);
+  const { doc, error: pdfError } = usePdf(current ? apiUrl(`/api/files/${current.id}`) : null, token);
 
   // The server needs the page count to keep guests within the deck.
   useEffect(() => {
@@ -117,7 +118,7 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   }, [doc, connected, patch]);
 
   async function loadLibrary() {
-    const response = await fetch("/api/library", { headers: authHeaders });
+    const response = await fetch(apiUrl("/api/library"), { headers: authHeaders });
     if (response.status === 401) return onSignOut();
     setLibrary(await response.json());
   }
@@ -141,7 +142,7 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
     form.append("pdf", pdfFile);
     if (pptFile) form.append("ppt", pptFile);
     try {
-      const response = await fetch("/api/library", { method: "POST", headers: authHeaders, body: form });
+      const response = await fetch(apiUrl("/api/library"), { method: "POST", headers: authHeaders, body: form });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Upload failed.");
       setTitle("");
@@ -158,12 +159,12 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
 
   async function remove(item: LibraryItem) {
     if (!window.confirm(`Delete "${item.title}"?`)) return;
-    await fetch(`/api/library/${item.id}`, { method: "DELETE", headers: authHeaders });
+    await fetch(apiUrl(`/api/library/${item.id}`), { method: "DELETE", headers: authHeaders });
     await loadLibrary();
   }
 
   async function downloadPpt(item: LibraryItem) {
-    const response = await fetch(`/api/files/${item.id}/ppt`, { headers: authHeaders });
+    const response = await fetch(apiUrl(`/api/files/${item.id}/ppt`), { headers: authHeaders });
     if (!response.ok) return setMessage("Could not download the PowerPoint file.");
     const url = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");

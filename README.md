@@ -34,6 +34,8 @@ The Supabase Free plan allows files up to 50 MB. This app enforces a 50 MiB maxi
 - Start command: `npm start`
 - Environment: `PRESENTER_PASSCODE`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` are required for a persistent deployment. `render.yaml` uses Render's free service plan and prompts for these environment variables.
 - With Supabase configured, presentation files and library metadata survive Render restarts. Without Supabase, local `DATA_DIR` storage is used and files are lost if the host's filesystem is reset.
+- The Render blueprint creates two separate static entry points: `https://tesda-presenter.onrender.com` and `https://tesda-guests.onrender.com`. Both connect to the same backend so live presentation state stays synchronized.
+- The backend allows API and WebSocket requests only from those two frontend origins in production.
 - HTTPS is required for screen sharing (Render/Railway provide it).
 
 ## Notes
