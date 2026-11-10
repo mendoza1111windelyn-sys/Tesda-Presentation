@@ -14,19 +14,17 @@ type LibraryItem = {
 
 export function Presenter() {
   const [token, setToken] = useState(() => sessionStorage.getItem("presenter-token") || "");
+  const setPresenterToken = (value: string) => {
+    sessionStorage.setItem("presenter-token", value);
+    setToken(value);
+  };
   if (!token) {
-    return (
-      <Login
-        onLogin={(value) => {
-          sessionStorage.setItem("presenter-token", value);
-          setToken(value);
-        }}
-      />
-    );
+    return <Login onLogin={setPresenterToken} />;
   }
   return (
     <Console
       token={token}
+      onTokenChanged={setPresenterToken}
       onSignOut={() => {
         sessionStorage.removeItem("presenter-token");
         setToken("");
@@ -36,19 +34,45 @@ export function Presenter() {
 }
 
 function Login({ onLogin }: { onLogin: (token: string) => void }) {
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [passcode, setPasscode] = useState("");
+  const [bootstrapPasscode, setBootstrapPasscode] = useState("");
+  const [newPasscode, setNewPasscode] = useState("");
+  const [confirmPasscode, setConfirmPasscode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    setError("");
+    try {
+      const response = await fetch(apiUrl("/api/auth/status"));
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not check presenter setup.");
+      if (typeof body.configured !== "boolean") throw new Error("Presenter setup status was invalid.");
+      setConfigured(body.configured);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not check presenter setup.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadStatus();
+  }, [loadStatus]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(apiUrl("/api/login"), {
+      if (!configured && newPasscode !== confirmPasscode) throw new Error("The new passcodes do not match.");
+      const response = await fetch(apiUrl(configured ? "/api/login" : "/api/auth/setup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ passcode }),
+        body: JSON.stringify(
+          configured
+            ? { passcode }
+            : { bootstrapPasscode, newPasscode },
+        ),
       });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Sign-in failed.");
@@ -64,19 +88,49 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
     <main className="splash">
       <Logo className="splash-logo small" />
       <form className="card" onSubmit={submit}>
-        <h1>Presenter sign-in</h1>
-        <label>
-          Passcode
-          <input type="password" autoFocus value={passcode} onChange={(event) => setPasscode(event.target.value)} />
-        </label>
+        {configured === null ? (
+          <h1>{error ? "Could not connect to presenter service" : "Loading presenter access…"}</h1>
+        ) : configured ? (
+          <>
+            <h1>Presenter sign-in</h1>
+            <label>
+              Passcode
+              <input type="password" autoFocus value={passcode} onChange={(event) => setPasscode(event.target.value)} />
+            </label>
+          </>
+        ) : (
+          <>
+            <h1>Set up presenter passcode</h1>
+            <p className="muted">Use the one-time setup passcode from Render, then choose a new passcode with at least 12 characters. You can change it later in Presenter settings.</p>
+            <label>
+              One-time setup passcode
+              <input type="password" autoFocus value={bootstrapPasscode} onChange={(event) => setBootstrapPasscode(event.target.value)} />
+            </label>
+            <label>
+              New presenter passcode
+              <input type="password" minLength={12} autoComplete="new-password" value={newPasscode} onChange={(event) => setNewPasscode(event.target.value)} />
+            </label>
+            <label>
+              Confirm new passcode
+              <input type="password" minLength={12} autoComplete="new-password" value={confirmPasscode} onChange={(event) => setConfirmPasscode(event.target.value)} />
+            </label>
+          </>
+        )}
         {error && <p className="error">{error}</p>}
-        <button className="button" disabled={busy || !passcode}>Sign in</button>
+        <button
+          className="button"
+          type={configured === null ? "button" : "submit"}
+          onClick={configured === null ? () => void loadStatus() : undefined}
+          disabled={busy || (configured === null && !error) || (configured ? !passcode : !bootstrapPasscode || !newPasscode || !confirmPasscode)}
+        >
+          {configured === null ? (error ? "Try again" : "Loading…") : configured ? "Sign in" : "Set passcode"}
+        </button>
       </form>
     </main>
   );
 }
 
-function Console({ token, onSignOut }: { token: string; onSignOut: () => void }) {
+function Console({ token, onSignOut, onTokenChanged }: { token: string; onSignOut: () => void; onTokenChanged: (token: string) => void }) {
   const [state, setState] = useState<SharedState>(emptyState);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -88,10 +142,14 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pptFile, setPptFile] = useState<File | null>(null);
   const [formKey, setFormKey] = useState(0);
+  const [showPasscodeSettings, setShowPasscodeSettings] = useState(false);
+  const [currentPasscode, setCurrentPasscode] = useState("");
+  const [newPasscode, setNewPasscode] = useState("");
+  const [confirmPasscode, setConfirmPasscode] = useState("");
+  const [savingPasscode, setSavingPasscode] = useState(false);
+  const [passcodeMessage, setPasscodeMessage] = useState("");
   const stageRef = useRef<HTMLElement>(null);
   const guestLink = guestUrl;
-
-  const authHeaders = { Authorization: `Bearer ${token}` };
 
   const { connected, send } = useSocket(`role=presenter&token=${encodeURIComponent(token)}`, {
     onMessage: (incoming) => {
@@ -111,6 +169,7 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
 
   const current = library.find((item) => item.id === state.currentId);
   const { doc, error: pdfError } = usePdf(current ? apiUrl(`/api/files/${current.id}`) : null, token);
+  const authHeaders = { Authorization: `Bearer ${token}` };
 
   // The server needs the page count to keep guests within the deck.
   useEffect(() => {
@@ -126,6 +185,31 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   useEffect(() => {
     loadLibrary();
   }, []);
+
+  async function changePasscode(event: React.FormEvent) {
+    event.preventDefault();
+    setPasscodeMessage("");
+    if (newPasscode !== confirmPasscode) return setPasscodeMessage("The new passcodes do not match.");
+    setSavingPasscode(true);
+    try {
+      const response = await fetch(apiUrl("/api/auth/change-passcode"), {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPasscode, newPasscode }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "Could not change passcode.");
+      onTokenChanged(body.token);
+      setCurrentPasscode("");
+      setNewPasscode("");
+      setConfirmPasscode("");
+      setPasscodeMessage("Passcode changed.");
+    } catch (caught) {
+      setPasscodeMessage(caught instanceof Error ? caught.message : "Could not change passcode.");
+    } finally {
+      setSavingPasscode(false);
+    }
+  }
 
   async function upload(event: React.FormEvent) {
     event.preventDefault();
@@ -216,11 +300,33 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
         <span className="spacer" />
         <code className="link">{guestLink}</code>
         <button className="button quiet" onClick={() => navigator.clipboard.writeText(guestLink)}>Copy guest link</button>
+        <button className="button quiet" onClick={() => setShowPasscodeSettings((value) => !value)}>Presenter settings</button>
         <button className="button quiet" onClick={onSignOut}>Sign out</button>
       </header>
 
       <div className="console-body">
         <aside className="library">
+          {showPasscodeSettings && (
+            <form className="upload" onSubmit={changePasscode}>
+              <h2>Change presenter passcode</h2>
+              <label>
+                Current passcode
+                <input type="password" autoComplete="current-password" value={currentPasscode} onChange={(event) => setCurrentPasscode(event.target.value)} />
+              </label>
+              <label>
+                New passcode <span className="req">at least 12 characters</span>
+                <input type="password" minLength={12} autoComplete="new-password" value={newPasscode} onChange={(event) => setNewPasscode(event.target.value)} />
+              </label>
+              <label>
+                Confirm new passcode
+                <input type="password" minLength={12} autoComplete="new-password" value={confirmPasscode} onChange={(event) => setConfirmPasscode(event.target.value)} />
+              </label>
+              {passcodeMessage && <p className={passcodeMessage === "Passcode changed." ? "muted" : "error"}>{passcodeMessage}</p>}
+              <button className="button" disabled={savingPasscode || !currentPasscode || !newPasscode || !confirmPasscode}>
+                {savingPasscode ? "Saving…" : "Change passcode"}
+              </button>
+            </form>
+          )}
           <h2>Presentations</h2>
           <form className="upload" onSubmit={upload} key={formKey}>
             <label>

@@ -3,6 +3,7 @@
 Present a PDF deck to guests who watch on their own devices. Guests can't control anything.
 
 - **Presenter** opens `/present`, signs in with the passcode, uploads PDFs (export your PowerPoint as PDF), picks one and presses **Start broadcast**. Slides change with the ← → keys or the buttons, and guests follow along instantly.
+- On the first visit, the presenter uses the one-time setup passcode configured on the server to choose a permanent passcode. The chosen passcode is stored as a salted hash; it can later be changed from **Presenter settings** without editing Render environment variables.
 - **Guests** open `/watch` and wait on a waiting screen until the broadcast starts. They see the presenter's slide; they can tick *Browse on my own* to read ahead.
 - **Animations:** PDFs can't hold animations, so the presenter can press **Share screen (live)** and share the PowerPoint window. Guests then get a **Live** tab (video) next to **Slides (PDF)**.
 
@@ -17,14 +18,14 @@ npm start              # http://localhost:3001
 
 For development run `npm run dev:server` and `npm run dev:client` in two terminals (client on http://localhost:5173).
 
-## Configure Supabase Storage
+## Configure Supabase
 
-The app can use Supabase for persistent file storage and its presentation library. Local development continues to use the `data` directory unless Supabase credentials are configured.
+The app can use Supabase for persistent file storage, its presentation library, and presenter credentials. Local development continues to use the `data` directory unless Supabase credentials are configured.
 
 1. Create a Supabase project.
-2. In the Supabase SQL Editor, run [`supabase/setup.sql`](./supabase/setup.sql). It creates the private `presentations` bucket and the library table.
+2. In the Supabase SQL Editor, run [`supabase/setup.sql`](./supabase/setup.sql). It creates the private `presentations` bucket and the required tables.
 3. Keep the project's server-side secret key private. Do not put it in the client or commit it.
-4. Configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` on the server. `SUPABASE_BUCKET` is optional and defaults to `presentations`.
+4. Configure `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and a strong, one-time `PRESENTER_PASSCODE` on the server. On first visit, use that one-time code to set the permanent presenter passcode.
 
 The Supabase Free plan allows files up to 50 MB. This app enforces a 50 MiB maximum for each PDF and PowerPoint upload.
 

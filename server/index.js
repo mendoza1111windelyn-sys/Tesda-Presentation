@@ -4,6 +4,7 @@ import http from "node:http";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import multer from "multer";
@@ -11,16 +12,13 @@ import { createClient } from "@supabase/supabase-js";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.env.PORT) || 3001;
-const PASSCODE = process.env.PRESENTER_PASSCODE;
-if (!PASSCODE) {
-  console.error("Set the PRESENTER_PASSCODE environment variable (see .env.example).");
-  process.exit(1);
-}
+const INITIAL_PASSCODE = process.env.PRESENTER_PASSCODE;
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(rootDir, "data"));
 const filesDir = path.join(dataDir, "files");
 const libraryFile = path.join(dataDir, "library.json");
+const credentialFile = path.join(dataDir, "presenter-credential.json");
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const allowedOrigins = new Set(
   (process.env.CORS_ALLOWED_ORIGINS || "")
@@ -69,12 +67,18 @@ function rowFromEntry(entry) {
 }
 async function loadLibrary() {
   if (supabase) {
-    const { data, error } = await supabase.from("presentations").select("*").order("uploaded_at", { ascending: false });
+    const [{ data, error }, { data: credentials, error: credentialError }] = await Promise.all([
+      supabase.from("presentations").select("*").order("uploaded_at", { ascending: false }),
+      supabase.from("presenter_credentials").select("salt, password_hash").eq("id", 1).maybeSingle(),
+    ]);
     if (error) throw new Error(`Could not load the presentation library from Supabase: ${error.message}`);
+    if (credentialError) throw new Error(`Could not load presenter credentials from Supabase: ${credentialError.message}`);
     library = data.map(entryFromRow);
+    presenterCredential = credentials;
     return;
   }
   if (fs.existsSync(libraryFile)) library = JSON.parse(fs.readFileSync(libraryFile, "utf8"));
+  if (fs.existsSync(credentialFile)) presenterCredential = JSON.parse(fs.readFileSync(credentialFile, "utf8"));
 }
 const saveLibrary = () => fs.writeFileSync(libraryFile, JSON.stringify(library, null, 2));
 const pdfPath = (id) => path.join(filesDir, `${id}.pdf`);
@@ -107,6 +111,63 @@ async function removeStoredFiles(names) {
 // ---- auth ----
 const tokens = new Set();
 const loginAttempts = new Map();
+let presenterCredential = null;
+let credentialSetupInProgress = false;
+const derivePasscodeHash = promisify(crypto.scrypt);
+const MIN_PASSCODE_LENGTH = 12;
+
+async function hashPasscode(passcode) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = await derivePasscodeHash(passcode, salt, 64);
+  return { salt, password_hash: hash.toString("hex") };
+}
+
+async function verifyPasscode(passcode, credential) {
+  if (!credential) return false;
+  const expected = Buffer.from(credential.password_hash, "hex");
+  if (expected.length !== 64) return false;
+  const actual = await derivePasscodeHash(passcode, credential.salt, 64);
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+async function savePresenterCredential(credential, insert) {
+  if (supabase) {
+    const query = supabase.from("presenter_credentials");
+    const result = insert
+      ? await query.insert({ id: 1, ...credential })
+      : await query.update(credential).eq("id", 1);
+    if (result.error) {
+      if (insert && result.error.code === "23505") return false;
+      throw new Error(`Could not save presenter credentials: ${result.error.message}`);
+    }
+  } else {
+    fs.writeFileSync(credentialFile, JSON.stringify(credential), { flag: insert ? "wx" : "w" });
+  }
+  presenterCredential = credential;
+  return true;
+}
+
+function checkPasscodeRateLimit(req, res) {
+  const entry = loginAttempts.get(req.ip) || { count: 0, since: Date.now() };
+  if (Date.now() - entry.since > 15 * 60_000) Object.assign(entry, { count: 0, since: Date.now() });
+  if (entry.count >= 10) {
+    res.status(429).json({ error: "Too many attempts. Try again later." });
+    return false;
+  }
+  loginAttempts.set(req.ip, entry);
+  return true;
+}
+
+function recordFailedPasscode(req) {
+  const entry = loginAttempts.get(req.ip);
+  if (entry) entry.count += 1;
+}
+
+function createPresenterToken() {
+  const token = crypto.randomBytes(24).toString("hex");
+  tokens.add(token);
+  return token;
+}
 
 function safeEqual(a, b) {
   const left = crypto.createHash("sha256").update(String(a)).digest();
@@ -122,6 +183,8 @@ function requirePresenter(req, res, next) {
   if (!tokens.has(bearer(req))) return res.status(401).json({ error: "Presenter sign-in required." });
   next();
 }
+
+const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 
 // ---- presentation state (one room) ----
 const freshState = () => ({ started: false, currentId: null, title: "", page: 1, pages: 0 });
@@ -144,20 +207,61 @@ app.use("/api", (req, res, next) => {
 });
 app.use(express.json({ limit: "10kb" }));
 
-app.post("/api/login", (req, res) => {
-  const ip = req.ip;
-  const entry = loginAttempts.get(ip) || { count: 0, since: Date.now() };
-  if (Date.now() - entry.since > 15 * 60_000) Object.assign(entry, { count: 0, since: Date.now() });
-  if (entry.count >= 10) return res.status(429).json({ error: "Too many attempts. Try again later." });
-  if (!safeEqual(req.body?.passcode ?? "", PASSCODE)) {
-    entry.count += 1;
-    loginAttempts.set(ip, entry);
+app.get("/api/auth/status", (_req, res) => {
+  res.json({ configured: !!presenterCredential });
+});
+
+app.post("/api/auth/setup", asyncRoute(async (req, res) => {
+  if (presenterCredential) return res.status(409).json({ error: "Presenter passcode is already set. Sign in instead." });
+  if (credentialSetupInProgress) return res.status(409).json({ error: "Presenter setup is already in progress. Try again shortly." });
+  if (!checkPasscodeRateLimit(req, res)) return;
+  const bootstrapPasscode = String(req.body?.bootstrapPasscode ?? "");
+  const newPasscode = String(req.body?.newPasscode ?? "");
+  if (!INITIAL_PASSCODE || !safeEqual(bootstrapPasscode, INITIAL_PASSCODE)) {
+    recordFailedPasscode(req);
+    return res.status(401).json({ error: "Wrong one-time setup passcode." });
+  }
+  if (newPasscode.length < MIN_PASSCODE_LENGTH) {
+    return res.status(400).json({ error: `Choose a passcode with at least ${MIN_PASSCODE_LENGTH} characters.` });
+  }
+  credentialSetupInProgress = true;
+  try {
+    const credential = await hashPasscode(newPasscode);
+    if (!(await savePresenterCredential(credential, true))) {
+      return res.status(409).json({ error: "Presenter passcode was already set. Sign in instead." });
+    }
+    loginAttempts.delete(req.ip);
+    res.status(201).json({ token: createPresenterToken() });
+  } finally {
+    credentialSetupInProgress = false;
+  }
+}));
+
+app.post("/api/login", asyncRoute(async (req, res) => {
+  if (!presenterCredential) return res.status(409).json({ error: "Set up your presenter passcode first." });
+  if (!checkPasscodeRateLimit(req, res)) return;
+  if (!(await verifyPasscode(String(req.body?.passcode ?? ""), presenterCredential))) {
+    recordFailedPasscode(req);
     return res.status(401).json({ error: "Wrong passcode." });
   }
-  const token = crypto.randomBytes(24).toString("hex");
-  tokens.add(token);
-  res.json({ token });
-});
+  loginAttempts.delete(req.ip);
+  res.json({ token: createPresenterToken() });
+}));
+
+app.post("/api/auth/change-passcode", requirePresenter, asyncRoute(async (req, res) => {
+  const currentPasscode = String(req.body?.currentPasscode ?? "");
+  const newPasscode = String(req.body?.newPasscode ?? "");
+  if (!(await verifyPasscode(currentPasscode, presenterCredential))) {
+    return res.status(401).json({ error: "Current passcode is incorrect." });
+  }
+  if (newPasscode.length < MIN_PASSCODE_LENGTH) {
+    return res.status(400).json({ error: `Choose a passcode with at least ${MIN_PASSCODE_LENGTH} characters.` });
+  }
+  const credential = await hashPasscode(newPasscode);
+  await savePresenterCredential(credential, false);
+  tokens.clear();
+  res.json({ token: createPresenterToken() });
+}));
 
 app.get("/api/library", requirePresenter, (_req, res) => res.json(library));
 
@@ -178,7 +282,6 @@ const upload = multer({
 
 const startsWith = (buffer, bytes) => buffer.subarray(0, bytes.length).equals(Buffer.from(bytes));
 const uploadFields = upload.fields([{ name: "pdf", maxCount: 1 }, { name: "ppt", maxCount: 1 }]);
-const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 
 app.post(
   "/api/library",
