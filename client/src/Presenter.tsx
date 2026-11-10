@@ -129,6 +129,11 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   async function upload(event: React.FormEvent) {
     event.preventDefault();
     if (!pdfFile) return;
+    const maxFileSize = 50 * 1024 * 1024;
+    if (pdfFile.size > maxFileSize || (pptFile && pptFile.size > maxFileSize)) {
+      setMessage("Each file must be 50 MiB or smaller.");
+      return;
+    }
     setUploading(true);
     setMessage("");
     const form = new FormData();
@@ -222,11 +227,11 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
               <input type="text" value={title} maxLength={150} onChange={(event) => setTitle(event.target.value)} />
             </label>
             <label>
-              PDF version <span className="req">required · shown to guests</span>
+              PDF version <span className="req">required · shown to guests · max 50 MiB</span>
               <input type="file" accept="application/pdf,.pdf" onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)} />
             </label>
             <label>
-              PowerPoint <span className="req">optional · kept for you</span>
+              PowerPoint <span className="req">optional · kept for you · max 50 MiB</span>
               <input type="file" accept=".pptx,.ppt,.ppsx,.pps" onChange={(event) => setPptFile(event.target.files?.[0] ?? null)} />
             </label>
             <button className="button" disabled={uploading || !pdfFile}>{uploading ? "Uploading…" : "Upload presentation"}</button>

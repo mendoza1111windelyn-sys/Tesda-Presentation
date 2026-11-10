@@ -17,11 +17,23 @@ npm start              # http://localhost:3001
 
 For development run `npm run dev:server` and `npm run dev:client` in two terminals (client on http://localhost:5173).
 
+## Configure Supabase Storage
+
+The app can use Supabase for persistent file storage and its presentation library. Local development continues to use the `data` directory unless Supabase credentials are configured.
+
+1. Create a Supabase project.
+2. In the Supabase SQL Editor, run [`supabase/setup.sql`](./supabase/setup.sql). It creates the private `presentations` bucket and the library table.
+3. Keep the project's server-side secret key private. Do not put it in the client or commit it.
+4. Configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` on the server. `SUPABASE_BUCKET` is optional and defaults to `presentations`.
+
+The Supabase Free plan allows files up to 50 MB. This app enforces a 50 MiB maximum for each PDF and PowerPoint upload.
+
 ## Deploy (Render / Railway)
 
 - Build command: `npm install && npm run build`
 - Start command: `npm start`
-- Environment: `PRESENTER_PASSCODE` (required), optional `DATA_DIR` pointing at a persistent disk. Without a persistent disk, uploaded PDFs are lost when the service restarts.
+- Environment: `PRESENTER_PASSCODE`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY` are required for a persistent deployment. `render.yaml` uses Render's free service plan and prompts for these environment variables.
+- With Supabase configured, presentation files and library metadata survive Render restarts. Without Supabase, local `DATA_DIR` storage is used and files are lost if the host's filesystem is reset.
 - HTTPS is required for screen sharing (Render/Railway provide it).
 
 ## Notes
