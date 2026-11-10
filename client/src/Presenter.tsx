@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { emptyState, PdfView, type SharedState } from "./PdfView";
-import { rtcConfig, useSocket } from "./socket";
+import { Logo } from "./Brand";
+import { emptyState, Flipbook, usePdf, type SharedState } from "./PdfView";
+import { useSocket } from "./socket";
 
-type LibraryItem = { id: string; title: string; size: number; uploadedAt: string };
+type LibraryItem = {
+  id: string;
+  title: string;
+  size: number;
+  uploadedAt: string;
+  pptName?: string;
+};
 
 export function Presenter() {
   const [token, setToken] = useState(() => sessionStorage.getItem("presenter-token") || "");
@@ -53,7 +60,8 @@ function Login({ onLogin }: { onLogin: (token: string) => void }) {
   }
 
   return (
-    <main className="center-screen">
+    <main className="splash">
+      <Logo className="splash-logo small" />
       <form className="card" onSubmit={submit}>
         <h1>Presenter sign-in</h1>
         <label>
@@ -75,20 +83,19 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
   const [library, setLibrary] = useState<LibraryItem[]>([]);
   const [message, setMessage] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [sharing, setSharing] = useState(false);
-  const streamRef = useRef<MediaStream | null>(null);
-  const peers = useRef(new Map<string, RTCPeerConnection>());
-  const previewRef = useRef<HTMLVideoElement>(null);
+  const [title, setTitle] = useState("");
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pptFile, setPptFile] = useState<File | null>(null);
+  const [formKey, setFormKey] = useState(0);
+  const stageRef = useRef<HTMLElement>(null);
   const guestLink = `${window.location.origin}/watch`;
 
   const authHeaders = { Authorization: `Bearer ${token}` };
 
   const { connected, send } = useSocket(`role=presenter&token=${encodeURIComponent(token)}`, {
-    onMessage: async (incoming) => {
+    onMessage: (incoming) => {
       if (incoming.type === "state") setState(incoming.state);
       else if (incoming.type === "guests") setGuestCount(incoming.count);
-      else if (incoming.type === "request-stream") await offerTo(incoming.from);
-      else if (incoming.type === "signal") await handleSignal(incoming.from, incoming.data);
     },
   });
 
@@ -101,68 +108,13 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
     [send],
   );
 
-  async function offerTo(guestId: string) {
-    const stream = streamRef.current;
-    if (!stream) return;
-    peers.current.get(guestId)?.close();
-    const peer = new RTCPeerConnection(rtcConfig);
-    peers.current.set(guestId, peer);
-    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-    peer.onicecandidate = (event) => {
-      if (event.candidate) send({ type: "signal", to: guestId, data: { candidate: event.candidate } });
-    };
-    peer.onconnectionstatechange = () => {
-      if (["failed", "closed"].includes(peer.connectionState)) peers.current.delete(guestId);
-    };
-    await peer.setLocalDescription(await peer.createOffer());
-    send({ type: "signal", to: guestId, data: { description: peer.localDescription } });
-  }
+  const current = library.find((item) => item.id === state.currentId);
+  const { doc, error: pdfError } = usePdf(current ? `/api/files/${current.id}` : null, token);
 
-  async function handleSignal(guestId: string, data: any) {
-    const peer = peers.current.get(guestId);
-    if (!peer) return;
-    if (data.description) await peer.setRemoteDescription(data.description);
-    else if (data.candidate) await peer.addIceCandidate(data.candidate).catch(() => {});
-  }
-
-  async function startShare() {
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: true });
-      streamRef.current = stream;
-      stream.getVideoTracks()[0].onended = () => stopShare();
-      if (previewRef.current) previewRef.current.srcObject = stream;
-      setSharing(true);
-      patch({ live: true });
-    } catch {
-      setMessage("Screen sharing was cancelled or is not supported on this device.");
-    }
-  }
-
-  function stopShare() {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    peers.current.forEach((peer) => peer.close());
-    peers.current.clear();
-    if (previewRef.current) previewRef.current.srcObject = null;
-    setSharing(false);
-    patch({ live: false });
-  }
-
-  // After a reconnect the server clears `live`; restore it if the capture is still running.
+  // The server needs the page count to keep guests within the deck.
   useEffect(() => {
-    if (connected && streamRef.current) send({ type: "state", patch: { live: true } });
-  }, [connected, send]);
-
-  useEffect(() => {
-    if (sharing && previewRef.current && streamRef.current) previewRef.current.srcObject = streamRef.current;
-  }, [sharing]);
-
-  useEffect(() => {
-    return () => {
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      peers.current.forEach((peer) => peer.close());
-    };
-  }, []);
+    if (doc && connected) patch({ pages: doc.numPages });
+  }, [doc, connected, patch]);
 
   async function loadLibrary() {
     const response = await fetch("/api/library", { headers: authHeaders });
@@ -174,16 +126,23 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
     loadLibrary();
   }, []);
 
-  async function upload(file: File | undefined) {
-    if (!file) return;
+  async function upload(event: React.FormEvent) {
+    event.preventDefault();
+    if (!pdfFile) return;
     setUploading(true);
     setMessage("");
     const form = new FormData();
-    form.append("file", file);
+    form.append("title", title);
+    form.append("pdf", pdfFile);
+    if (pptFile) form.append("ppt", pptFile);
     try {
       const response = await fetch("/api/library", { method: "POST", headers: authHeaders, body: form });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error || "Upload failed.");
+      setTitle("");
+      setPdfFile(null);
+      setPptFile(null);
+      setFormKey((value) => value + 1);
       await loadLibrary();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : "Upload failed.");
@@ -196,6 +155,17 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
     if (!window.confirm(`Delete "${item.title}"?`)) return;
     await fetch(`/api/library/${item.id}`, { method: "DELETE", headers: authHeaders });
     await loadLibrary();
+  }
+
+  async function downloadPpt(item: LibraryItem) {
+    const response = await fetch(`/api/files/${item.id}/ppt`, { headers: authHeaders });
+    if (!response.ok) return setMessage("Could not download the PowerPoint file.");
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = item.pptName || `${item.title}.pptx`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   function choose(item: LibraryItem) {
@@ -214,11 +184,12 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.target as HTMLElement).tagName === "INPUT") return;
-      if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+      const tag = (event.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "BUTTON") return;
+      if (["ArrowRight", "ArrowDown", "PageDown", " "].includes(event.key)) {
         event.preventDefault();
         go(stateRef.current.page + 1);
-      } else if (["ArrowLeft", "PageUp"].includes(event.key)) {
+      } else if (["ArrowLeft", "ArrowUp", "PageUp"].includes(event.key)) {
         event.preventDefault();
         go(stateRef.current.page - 1);
       }
@@ -227,39 +198,53 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
     return () => window.removeEventListener("keydown", onKey);
   }, [go]);
 
-  const current = library.find((item) => item.id === state.currentId);
+  const ready = !!doc && state.pages > 0;
 
   return (
     <div className="console">
       <header className="topbar">
-        <strong>Presenter</strong>
-        <span className={connected ? "pill ok" : "pill"}>{connected ? "Connected" : "Reconnecting…"}</span>
-        <span className="pill">{guestCount} guest{guestCount === 1 ? "" : "s"} waiting/watching</span>
-        <button className="button quiet" onClick={() => navigator.clipboard.writeText(guestLink)}>Copy guest link</button>
+        <Logo className="topbar-logo" />
+        <strong className="topbar-title">Presenter</strong>
+        <span className={connected ? "pill ok" : "pill warn"}>{connected ? "Connected" : "Reconnecting…"}</span>
+        <span className="pill">{guestCount} guest{guestCount === 1 ? "" : "s"} online</span>
+        <span className="spacer" />
         <code className="link">{guestLink}</code>
+        <button className="button quiet" onClick={() => navigator.clipboard.writeText(guestLink)}>Copy guest link</button>
         <button className="button quiet" onClick={onSignOut}>Sign out</button>
       </header>
 
       <div className="console-body">
         <aside className="library">
           <h2>Presentations</h2>
-          <label className="button upload">
-            {uploading ? "Uploading…" : "Upload PDF"}
-            <input type="file" accept="application/pdf,.pdf" hidden disabled={uploading} onChange={(event) => { upload(event.target.files?.[0]); event.target.value = ""; }} />
-          </label>
+          <form className="upload" onSubmit={upload} key={formKey}>
+            <label>
+              Title (optional)
+              <input type="text" value={title} maxLength={150} onChange={(event) => setTitle(event.target.value)} />
+            </label>
+            <label>
+              PDF version <span className="req">required · shown to guests</span>
+              <input type="file" accept="application/pdf,.pdf" onChange={(event) => setPdfFile(event.target.files?.[0] ?? null)} />
+            </label>
+            <label>
+              PowerPoint <span className="req">optional · kept for you</span>
+              <input type="file" accept=".pptx,.ppt,.ppsx,.pps" onChange={(event) => setPptFile(event.target.files?.[0] ?? null)} />
+            </label>
+            <button className="button" disabled={uploading || !pdfFile}>{uploading ? "Uploading…" : "Upload presentation"}</button>
+          </form>
           {message && <p className="error">{message}</p>}
           <ul>
             {library.map((item) => (
               <li key={item.id} className={item.id === state.currentId ? "active" : ""}>
                 <button className="link-button" onClick={() => choose(item)}>{item.title}</button>
+                {item.pptName && <button className="icon" title="Download PowerPoint" aria-label={`Download PowerPoint of ${item.title}`} onClick={() => downloadPpt(item)}>⬇ PPT</button>}
                 <button className="icon" aria-label={`Delete ${item.title}`} onClick={() => remove(item)}>✕</button>
               </li>
             ))}
-            {library.length === 0 && <li className="muted">No presentations yet. Export your PowerPoint as PDF and upload it.</li>}
+            {library.length === 0 && <li className="muted">No presentations yet. Upload the PDF export of your PowerPoint (and the PowerPoint itself, if you like).</li>}
           </ul>
         </aside>
 
-        <section className="stage">
+        <section className="stage" ref={stageRef}>
           {current ? (
             <>
               <div className="controls">
@@ -278,25 +263,22 @@ function Console({ token, onSignOut }: { token: string; onSignOut: () => void })
                 </span>
                 <button className="button" onClick={() => go(state.page + 1)} disabled={state.page >= state.pages}>Next ▶</button>
                 <span className="spacer" />
-                <button className={state.started ? "button danger" : "button"} onClick={() => patch({ started: !state.started })}>
-                  {state.started ? "End broadcast" : "Start broadcast"}
-                </button>
-                <button className={sharing ? "button danger" : "button"} onClick={sharing ? stopShare : startShare} disabled={!state.started}>
-                  {sharing ? "Stop screen share" : "Share screen (live)"}
+                <button className="button quiet" onClick={() => stageRef.current?.requestFullscreen?.()}>Full screen</button>
+                <button className={state.started ? "button danger" : "button go"} onClick={() => patch({ started: !state.started })} disabled={!state.started && !ready}>
+                  {state.started ? "End presentation" : "Start presentation"}
                 </button>
               </div>
               <p className="muted">
                 {state.started
-                  ? "Guests can now see your slides. Use ← → keys to change slides. Share your screen to show animations live."
-                  : "Guests see a waiting screen until you start the broadcast."}
+                  ? "Guests are watching. Their pages turn when you change slides (← → keys, clicker, or buttons)."
+                  : "Guests see “Getting ready to present” until you press Start presentation."}
               </p>
               <div className="preview">
-                <PdfView url={`/api/files/${current.id}`} token={token} page={state.page} onLoaded={(pages) => patch({ pages })} />
-                {sharing && <video ref={previewRef} className="self-view" autoPlay muted playsInline />}
+                {doc ? <Flipbook doc={doc} page={state.page} /> : <p className="muted">{pdfError || "Loading slides…"}</p>}
               </div>
             </>
           ) : (
-            <p className="muted">Choose or upload a presentation to begin.</p>
+            <p className="muted">Choose or upload a presentation to begin. Guests currently see “Getting ready to present”.</p>
           )}
         </section>
       </div>

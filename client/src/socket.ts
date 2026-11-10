@@ -1,9 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import type { SharedState } from "./PdfView";
-
-export const rtcConfig: RTCConfiguration = {
-  iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }],
-};
 
 type Handlers = {
   onMessage: (message: any) => void;
@@ -33,7 +28,7 @@ export function useSocket(query: string, handlers: Handlers) {
       };
       socket.onclose = (event) => {
         setConnected(false);
-        if (!closed && event.code !== 4000) retry = window.setTimeout(connect, 1500);
+        if (!closed && event.code !== 4000) retry = window.setTimeout(connect, 1500 + Math.random() * 1500);
       };
     };
     connect();
@@ -49,5 +44,3 @@ export function useSocket(query: string, handlers: Handlers) {
   };
   return { connected, send };
 }
-
-export type { SharedState };
